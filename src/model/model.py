@@ -9,7 +9,7 @@ from torch.autograd import *
 
 
 class ElectraForSequenceClassification(ElectraPreTrainedModel):
-    def __init__(self, config, lstm_hidden, label_emb_size, score_emb_size, score_size, num_layer, bilstm_flag):
+    def __init__(self, config, lstm_hidden, open_emb_size, close_emb_size, open_size, clsoe_size, num_layer, bilstm_flag):
         super().__init__(config)
 
         assert score_emb_size == lstm_hidden * 2, "Please set score-embedding-size to twice the lstm-hidden-size"
@@ -21,61 +21,78 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
 
         self.n_hidden = lstm_hidden
 
-        self.score_emb = nn.Embedding(score_size, score_emb_size, scale_grad_by_freq=True)
+        self.open_emb = nn.Embedding(score_size, open_emb_size, scale_grad_by_freq=True)
+        self.close_emb = nn.Embedding(score_size, close_emb_size, scale_grad_by_freq=True)
+
         self.num_layers = num_layer
         self.bidirectional = 2 if bilstm_flag else 1
 
-        self.lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
-        self.lstm_last = nn.LSTM(lstm_hidden * 4, lstm_hidden, num_layers=self.num_layers,
-                                 batch_first=True, bidirectional=bilstm_flag)
-        self.lstm_score_sequence = nn.LSTM(lstm_hidden * 2 + score_size, lstm_hidden, num_layers=self.num_layers,
-                                           batch_first=True, bidirectional=bilstm_flag)
+        self.open_lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
+        self.open_lstm_last = nn.LSTM(lstm_hidden * 4, lstm_hidden, num_layers=self.num_layers,
+                                      batch_first=True, bidirectional=bilstm_flag)
 
-        self.label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
-        self.label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
+        self.close_lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
+        self.close_lstm_last = nn.LSTM(lstm_hidden * 4, lstm_hidden, num_layers=self.num_layers,
+                                      batch_first=True, bidirectional=bilstm_flag)
 
-        self.lstm_hidden2senti = nn.Linear(lstm_hidden * 2, config.num_labels)
+        self.open_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
+        self.open_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
+
+        self.close_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
+        self.close_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
+
+        self.lstm_hidden2open = nn.Linear(lstm_hidden * 2, config.num_labels)
+        self.lstm_hidden2close = nn.Linear(lstm_hidden * 2, config.num_labels)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         self.init_weights()
 
-    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, labels=None,
-                input_label_seq_tensor=None, input_senti_seq_tensor=None, word_seq_lengths=None):
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, open_labels=None,
+                open_label_seq_tensor=None, close_labels=None, close_label_seq_tensor=None,
+                input_senti_seq_tensor=None, word_seq_lengths=None):
         discriminator_hidden_states = self.electra(input_ids, attention_mask, token_type_ids)
 
         # (batch_size, max_length, hidden_size)
         discriminator_hidden_states = discriminator_hidden_states[0]
 
         self.batch_size = discriminator_hidden_states.shape[0]
-        label_embs = self.score_emb(input_label_seq_tensor)
+        label_embs = self.open_emb(input_label_seq_tensor)
 
         hidden = None
 
-        lstm_outputs, hidden = self.lstm_first(discriminator_hidden_states, hidden)
-        lstm_outputs = self.dropout(lstm_outputs)
+        """
+        Open tag predict layer
+        """
+        open_lstm_outputs, hidden = self.open_lstm_first(discriminator_hidden_states, hidden)
+        open_lstm_outputs = self.dropout(open_lstm_outputs)
 
-        word2score_attention_output = self.label_attn(lstm_outputs, label_embs, label_embs, False)
+        open_attention_output = self.open_label_attn(open_lstm_outputs, label_embs, label_embs, False)
 
         # [batch, seq_length, lstm_hiddn * 2 + score_label_emb]
-        lstm_outputs = torch.cat([lstm_outputs, word2score_attention_output], dim=-1)
+        open_lstm_outputs = torch.cat([open_lstm_outputs, open_attention_output], dim=-1)
+
+        open_lstm_outputs, hidden = self.open_lstm_last(open_lstm_outputs, hidden)
+        open_lstm_outputs = self.dropout(open_lstm_outputs)
+
+        open_attention_output = self.open_label_attn_last(open_lstm_outputs, label_embs, label_embs, True)
 
         """
-        Last Layer
+        Close tag predict layer
         """
-        lstm_outputs, hidden = self.lstm_last(lstm_outputs, hidden)
-        lstm_outputs = self.dropout(lstm_outputs)
+        hidden = None
+        close_lstm_outputs, hidden = self.close_lstm_first(discriminator_hidden_states, hidden)
+        close_lstm_outputs = self.dropout(close_lstm_outputs)
 
-        word2score_attention_output = self.label_attn_last(lstm_outputs, label_embs, label_embs, True)
+        close_attention_output = self.close_label_attn(close_lstm_outputs, label_embs, label_embs, False)
 
-        # [batch, seq_length, lstm_hidden * 2 + score_size]
-        lstm_outputs = torch.cat([lstm_outputs, word2score_attention_output], dim=-1)
+        close_lstm_outputs = torch.cat([close_lstm_outputs, close_attention_output], dim=-1)
 
-        lstm_outputs, hidden = self.lstm_score_sequence(lstm_outputs, hidden)
+        close_lstm_outputs, hidden = self.close_lstm_last(close_lstm_outputs, hidden)
+        close_lstm_outputs = self.dropout(close_lstm_outputs)
 
-        lstm_last_hidden = hidden[0].transpose(0, 1).contiguous().view(self.batch_size, -1)
+        close_attention_output = self.close_label_attn_last(close_lstm_outputs, label_embs, label_embs, True)
 
-
-        return word2score_attention_output.permute(0, 2, 1), self.lstm_hidden2senti(lstm_last_hidden)
+        return open_attention_output.permute(0, 2, 1), close_attention_output.permute(0, 2, 1)
 
 
 class multihead_attention(nn.Module):
@@ -152,6 +169,6 @@ class multihead_attention(nn.Module):
         outputs = torch.cat(torch.chunk(outputs, self.num_heads, dim=0), dim=concat_dim)  # (N, T_q, C)
 
         # Residual connection
-        # outputs += queries
+        outputs += queries
 
         return outputs
