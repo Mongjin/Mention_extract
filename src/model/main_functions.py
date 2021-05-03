@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score
+from seqeval.metrics import precision_score, recall_score, f1_score, classification_report
 import numpy as np
 from transformers.configuration_electra import ElectraConfig
 from transformers.tokenization_electra import ElectraTokenizer
@@ -19,51 +20,53 @@ class Helper():
         self.config = config
 
     def do_train(self, electra_model, optimizer, scheduler, train_dataloader, epoch, global_step):
-        score_criterion = nn.CrossEntropyLoss(ignore_index=0)
-        senti_criterion = nn.CrossEntropyLoss()
+        open_criterion = nn.CrossEntropyLoss(ignore_index=0)
+        close_criterion = nn.CrossEntropyLoss(ignore_index=0)
 
         # batch 단위 별 loss를 담을 리스트
         losses = []
         # 모델의 출력 결과와 실제 정답값을 담을 리스트
         total_predicts, total_corrects = [], []
-        total_pred_scores, total_score_corrects = 0, 0
+        total_open_pred, total_open_correct = 0, 0
+        total_close_pred, total_close_correct = 0, 0
         for step, batch in enumerate(tqdm(train_dataloader, desc="do_train(epoch_{})".format(epoch))):
 
             batch = tuple(t.cuda() for t in batch)
-            input_ids, attention_mask, token_type_ids, senti_labels, score_labels, senti_seq, score_seq, word_len_seq = batch[0], batch[1], batch[2], batch[3], batch[4], batch[5], batch[6], batch[7]
+            input_ids, attention_mask, token_type_ids, open_labels, close_labels, open_seq, close_seq, word_len_seq = batch[0], batch[1], batch[2], batch[3], batch[4], batch[5], batch[6], batch[7]
 
             # 입력 데이터에 대한 출력과 loss 생성
-            score_logits, senti_logit = electra_model(input_ids, attention_mask, token_type_ids,
-                                                                        senti_labels, score_seq, senti_seq,
-                                                                        word_len_seq)
+            open_logits, close_logits = electra_model(input_ids, attention_mask, token_type_ids,
+                                                      open_labels, close_labels, open_seq, close_seq, word_len_seq)
 
-            score_loss = score_criterion(score_logits, score_labels)
+            open_loss = open_criterion(open_logits, open_labels)
+            close_loss = close_criterion(close_logits, close_labels)
 
-            score_pred = F.softmax(score_logits, dim=1)
-            score_pred = score_pred.argmax(dim=1)
+            open_pred = F.softmax(open_logits, dim=1)
+            open_pred = open_pred.argmax(dim=1)
 
-            for pred, gold, length in zip(score_pred, score_labels, word_len_seq):
+            close_pred = F.softmax(close_logits, dim=1)
+            close_pred = close_pred.argmax(dim=1)
+
+            for pred, gold, length in zip(open_pred, open_labels, word_len_seq):
                 pred = pred[:length]
                 gold = gold[:length]
                 for pred_, gold_ in zip(pred, gold):
                     if gold_ != 0:
                         if pred_ == gold_:
-                            total_score_corrects += 1
-                        total_pred_scores += 1
+                            total_open_correct += 1
+                        total_open_pred += 1
 
-            senti_logit = senti_logit.squeeze()
-            senti_loss = senti_criterion(senti_logit, senti_labels)
+            for pred, gold, length in zip(close_pred, close_labels, word_len_seq):
+                pred = pred[:length]
+                gold = gold[:length]
+                for pred_, gold_ in zip(pred, gold):
+                    if gold_ != 0:
+                        if pred_ == gold_:
+                            total_close_correct += 1
+                        total_close_pred += 1
 
-            total_loss = score_loss * 0.1 + senti_loss * 0.9
+            total_loss = open_loss + close_loss
             # total_loss = senti_loss
-
-            predicts = F.softmax(senti_logit, dim=1)
-            predicts = predicts.argmax(dim=-1)
-            predicts = predicts.cpu().detach().numpy().tolist()
-            labels = senti_labels.cpu().detach().numpy().tolist()
-
-            total_predicts += predicts
-            total_corrects += labels
 
             if self.config["gradient_accumulation_steps"] > 1:
                 total_loss = total_loss / self.config["gradient_accumulation_steps"]
@@ -88,57 +91,59 @@ class Helper():
                 global_step += 1
 
         # 정확도 계산
-        accuracy = accuracy_score(total_corrects, total_predicts)
+        open_acc = total_open_correct / total_open_pred
+        close_acc = total_close_correct / total_close_pred
 
-        score_acc = total_score_corrects / total_pred_scores
-
-        return accuracy, np.mean(losses), global_step, score_acc
+        return close_acc, np.mean(losses), global_step, open_acc
 
     def do_evaluate(self, electra_model, test_dataloader, mode):
         # 모델의 입력, 출력, 실제 정답값을 담을 리스트
         total_input_ids, total_predicts, total_corrects = [], [], []
-        total_pred_scores, total_score_corrects = 0, 0
+        total_open_pred, total_open_correct = 0, 0
+        total_close_pred, total_close_correct = 0, 0
         for step, batch in enumerate(tqdm(test_dataloader, desc="do_evaluate")):
             batch = tuple(t.cuda() for t in batch)
-            input_ids, attention_mask, token_type_ids, senti_labels, score_labels, senti_seq, score_seq, word_len_seq = batch[0], batch[1], batch[2], batch[3], batch[4], batch[5], batch[6], batch[7]
+            input_ids, attention_mask, token_type_ids, open_labels, close_labels, open_seq, close_seq, word_len_seq = batch[0], batch[1], batch[2], batch[3], batch[4], batch[5], batch[6], batch[7]
 
             # 입력 데이터에 대한 출력 결과 생성
-            score_logits, senti_logits = electra_model(input_ids, attention_mask, token_type_ids,
-                                                                         senti_labels, score_seq, senti_seq,
-                                                                         word_len_seq)
+            open_logits, close_logits = electra_model(input_ids, attention_mask, token_type_ids,
+                                                      open_labels, close_labels, open_seq, close_seq, word_len_seq)
 
-            score_pred = F.softmax(score_logits, dim=1)
-            score_pred = score_pred.argmax(dim=1)
+            open_pred = F.softmax(open_logits, dim=1)
+            open_pred = open_pred.argmax(dim=1)
 
-            for pred, gold, length in zip(score_pred, score_labels, word_len_seq):
+            close_pred = F.softmax(close_logits, dim=1)
+            close_pred = close_pred.argmax(dim=1)
+
+            for pred, gold, length in zip(open_pred, open_labels, word_len_seq):
                 pred = pred[:length]
                 gold = gold[:length]
                 for pred_, gold_ in zip(pred, gold):
                     if gold_ != 0:
                         if pred_ == gold_:
-                            total_score_corrects += 1
-                        total_pred_scores += 1
+                            total_open_correct += 1
+                        total_open_pred += 1
 
-            senti_logits = senti_logits.squeeze()
+            for pred, gold, length in zip(close_pred, close_labels, word_len_seq):
+                pred = pred[:length]
+                gold = gold[:length]
+                for pred_, gold_ in zip(pred, gold):
+                    if gold_ != 0:
+                        if pred_ == gold_:
+                            total_close_correct += 1
+                        total_close_pred += 1
 
-            predicts = F.softmax(senti_logits, dim=1)
-            predicts = predicts.argmax(dim=-1)
-            predicts = predicts.cpu().detach().numpy().tolist()
-            labels = senti_labels.cpu().detach().numpy().tolist()
             input_ids = input_ids.cpu().detach().numpy().tolist()
-
-            total_predicts += predicts
-            total_corrects += labels
             total_input_ids += input_ids
 
         # 정확도 계산
-        accuracy = accuracy_score(total_corrects, total_predicts)
-        score_acc = total_score_corrects / total_pred_scores
+        open_acc = total_open_correct / total_open_pred
+        close_acc = total_close_correct / total_close_pred
 
         if (mode == "train"):
-            return accuracy, score_acc
+            return open_acc, close_acc
         else:
-            return accuracy, total_input_ids, total_predicts, total_corrects
+            return open_acc, close_acc, total_input_ids, total_predicts, total_corrects
 
     def do_analyze(self, electra_model, test_dataloader, mode):
         # 모델의 입력, 출력, 실제 정답값을 담을 리스트
@@ -172,24 +177,26 @@ class Helper():
     def train(self):
         #########################################################################################################################################
         # electra config 객체 생성
-        electra_config = ElectraConfig.from_pretrained(os.path.join(self.config["model_dir_path"], "checkpoint-{}".format(self.config["checkpoint"])),
-                                                       num_labels=self.config["senti_labels"], cache_dir=None)
+        # 'google / electra - large - discriminator'
+        electra_config = ElectraConfig.from_pretrained('/home/mongjin/electra_large',
+                                                       num_labels=self.config["open_labels"], cache_dir=None)
 
         # electra tokenizer 객체 생성
-        electra_tokenizer = ElectraTokenizer.from_pretrained(os.path.join(self.config["model_dir_path"], "checkpoint-{}".format(self.config["checkpoint"])),
+        electra_tokenizer = ElectraTokenizer.from_pretrained('/home/mongjin/electra_large',
                                                              do_lower_case=False,
                                                              cache_dir=None)
 
         # electra model 객체 생성
-        electra_model = ElectraForSequenceClassification.from_pretrained(os.path.join(self.config["model_dir_path"], "checkpoint-{}".format(self.config["checkpoint"])),
+        electra_model = ElectraForSequenceClassification.from_pretrained('/home/mongjin/electra_large',
                                                                          config=electra_config,
                                                                          lstm_hidden=self.config['lstm_hidden'],
-                                                                         label_emb_size=self.config['lstm_hidden'] * 2,
-                                                                         score_emb_size=self.config['lstm_hidden'] * 2,
-                                                                         score_size=self.config['score_labels'],
+                                                                         open_emb_size=self.config['lstm_hidden'] * 2,
+                                                                         close_emb_size=self.config['lstm_hidden'] * 2,
+                                                                         open_size=self.config['open_labels'],
+                                                                         close_size=self.config['close_labels'],
                                                                          num_layer=self.config['lstm_num_layer'],
                                                                          bilstm_flag=self.config['bidirectional_flag'],
-                                                                         cache_dir=self.config["cache_dir_path"]
+                                                                         cache_dir=self.config["cache_dir_path"],
                                                                          # from_tf=True
                                                                          )
         #########################################################################################################################################
@@ -202,8 +209,8 @@ class Helper():
         # 학습 데이터 전처리
         train_dataset = preprocessing.convert_data2dataset(datas=train_datas, tokenizer=electra_tokenizer,
                                                            max_length=self.config["max_length"],
-                                                           labels=self.config["senti_labels"],
-                                                           score_labels=self.config["score_labels"],
+                                                           open_labels=self.config["open_labels"],
+                                                           close_labels=self.config["close_labels"],
                                                            mode=self.config["mode"])
 
         # 학습 데이터를 batch 단위로 추출하기 위한 DataLoader 객체 생성
@@ -216,13 +223,13 @@ class Helper():
         # 평가 데이터 전처리
         test_dataset = preprocessing.convert_data2dataset(datas=test_datas, tokenizer=electra_tokenizer,
                                                           max_length=self.config["max_length"],
-                                                          labels=self.config["senti_labels"],
-                                                          score_labels=self.config["score_labels"],
+                                                          open_labels=self.config["open_labels"],
+                                                          close_labels=self.config["close_labels"],
                                                           mode=self.config["mode"])
 
         # 평가 데이터를 batch 단위로 추출하기 위한 DataLoader 객체 생성
         test_sampler = SequentialSampler(test_dataset)
-        test_dataloader = DataLoader(test_dataset, sampler=test_sampler, batch_size=100)
+        test_dataloader = DataLoader(test_dataset, sampler=test_sampler, batch_size=12)
 
         # 전체 학습 횟수(batch 단위)
         t_total = len(train_dataloader) // self.config["gradient_accumulation_steps"] * self.config["epoch"]
@@ -251,27 +258,27 @@ class Helper():
             electra_model.train()
 
             # 학습 데이터에 대한 정확도와 평균 loss
-            train_accuracy, average_loss, global_step, score_acc = self.do_train(electra_model=electra_model,
+            close_acc, average_loss, global_step, open_acc = self.do_train(electra_model=electra_model,
                                                                  optimizer=optimizer, scheduler=scheduler,
                                                                  train_dataloader=train_dataloader,
                                                                  epoch=epoch + 1, global_step=global_step)
 
-            print("train_accuracy : {}\taverage_loss : {}\n".format(round(train_accuracy, 4), round(average_loss, 4)))
-            print("train_score_accuracy :", "{:.6f}".format(score_acc))
+            print("average_loss : {}\n".format(round(average_loss, 4)))
+            print("train_open_accuracy :", "{:.6f}".format(open_acc))
+            print("train_close_accuracy :", "{:.6f}".format(close_acc))
 
             electra_model.eval()
 
             # 평가 데이터에 대한 정확도
-            test_accuracy, score_acc = self.do_evaluate(electra_model=electra_model, test_dataloader=test_dataloader,
+            open_acc, close_acc = self.do_evaluate(electra_model=electra_model, test_dataloader=test_dataloader,
                                              mode=self.config["mode"])
 
-            print("test_accuracy : {}\n".format(round(test_accuracy, 4)))
-            print("test_score_accuracy :", "{:.6f}".format(score_acc))
-
+            print("test_open_accuracy : {}\n".format(round(open_acc, 4)))
+            print("test_close_accuracy : {}\n".format(round(close_acc, 4)))
 
             # 현재의 정확도가 기존 정확도보다 높은 경우 모델 파일 저장
-            if (max_test_accuracy < test_accuracy):
-                max_test_accuracy = test_accuracy
+            if (max_test_accuracy < ((open_acc + close_acc) / 2)):
+                max_test_accuracy = (open_acc + close_acc) / 2
 
                 output_dir = os.path.join(self.config["model_dir_path"], "checkpoint-{}".format(global_step))
                 if not os.path.exists(output_dir):
@@ -355,16 +362,17 @@ class Helper():
 
         # 평가 데이터를 batch 단위로 추출하기 위한 DataLoader 객체 생성
         test_sampler = SequentialSampler(test_dataset)
-        test_dataloader = DataLoader(test_dataset, sampler=test_sampler, batch_size=100)
+        test_dataloader = DataLoader(test_dataset, sampler=test_sampler, batch_size=12)
 
         electra_model.eval()
 
         # 평가 데이터에 대한 정확도와 모델의 입력, 출력, 정답
-        test_accuracy, total_input_ids, total_predicts, total_corrects = self.do_evaluate(electra_model=electra_model,
+        open_accuracy, close_accuracy, total_input_ids, total_predicts, total_corrects = self.do_evaluate(electra_model=electra_model,
                                                                                      test_dataloader=test_dataloader,
                                                                                      mode=self.config["mode"])
 
-        print("test_accuracy : {}\n".format(round(test_accuracy, 4)))
+        print("open_accuracy : {}\n".format(round(open_accuracy, 4)))
+        print("close_accuracy : {}\n".format(round(close_accuracy, 4)))
 
         # 10개의 평가 케이스에 대하여 모델 출력과 정답 비교
         self.show_result(total_input_ids=total_input_ids[:10], total_predicts=total_predicts[:10],

@@ -9,10 +9,10 @@ from torch.autograd import *
 
 
 class ElectraForSequenceClassification(ElectraPreTrainedModel):
-    def __init__(self, config, lstm_hidden, open_emb_size, close_emb_size, open_size, clsoe_size, num_layer, bilstm_flag):
+    def __init__(self, config, lstm_hidden, open_emb_size, close_emb_size, open_size, close_size, num_layer, bilstm_flag):
         super().__init__(config)
 
-        assert score_emb_size == lstm_hidden * 2, "Please set score-embedding-size to twice the lstm-hidden-size"
+        assert open_emb_size == lstm_hidden * 2, "Please set score-embedding-size to twice the lstm-hidden-size"
 
         # 분류할 라벨의 개수
         self.num_labels = config.num_labels
@@ -21,76 +21,53 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
 
         self.n_hidden = lstm_hidden
 
-        self.open_emb = nn.Embedding(score_size, open_emb_size, scale_grad_by_freq=True)
-        self.close_emb = nn.Embedding(score_size, close_emb_size, scale_grad_by_freq=True)
+        self.open_emb = nn.Embedding(open_size, open_emb_size, scale_grad_by_freq=True)
+        self.close_emb = nn.Embedding(close_size, close_emb_size, scale_grad_by_freq=True)
 
         self.num_layers = num_layer
         self.bidirectional = 2 if bilstm_flag else 1
 
-        self.open_lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
-        self.open_lstm_last = nn.LSTM(lstm_hidden * 4, lstm_hidden, num_layers=self.num_layers,
-                                      batch_first=True, bidirectional=bilstm_flag)
+        self.label_lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
+        self.label_lstm_last = nn.LSTM(lstm_hidden * 6, lstm_hidden, num_layers=self.num_layers,
+                                       batch_first=True, bidirectional=bilstm_flag)
 
-        self.close_lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
-        self.close_lstm_last = nn.LSTM(lstm_hidden * 4, lstm_hidden, num_layers=self.num_layers,
-                                      batch_first=True, bidirectional=bilstm_flag)
+        self.label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
+        self.label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
 
-        self.open_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
-        self.open_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
-
-        self.close_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
-        self.close_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
-
-        self.lstm_hidden2open = nn.Linear(lstm_hidden * 2, config.num_labels)
-        self.lstm_hidden2close = nn.Linear(lstm_hidden * 2, config.num_labels)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         self.init_weights()
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, open_labels=None,
-                open_label_seq_tensor=None, close_labels=None, close_label_seq_tensor=None,
-                input_senti_seq_tensor=None, word_seq_lengths=None):
+                open_label_seq_tensor=None, close_labels=None, close_label_seq_tensor=None, word_seq_lengths=None):
         discriminator_hidden_states = self.electra(input_ids, attention_mask, token_type_ids)
 
         # (batch_size, max_length, hidden_size)
         discriminator_hidden_states = discriminator_hidden_states[0]
 
         self.batch_size = discriminator_hidden_states.shape[0]
-        label_embs = self.open_emb(input_label_seq_tensor)
+        open_embs = self.open_emb(open_label_seq_tensor)
+        close_embs = self.close_emb(close_label_seq_tensor)
 
         hidden = None
 
         """
         Open tag predict layer
         """
-        open_lstm_outputs, hidden = self.open_lstm_first(discriminator_hidden_states, hidden)
-        open_lstm_outputs = self.dropout(open_lstm_outputs)
+        lstm_outputs, hidden = self.label_lstm_first(discriminator_hidden_states, hidden)
+        lstm_outputs = self.dropout(lstm_outputs)
 
-        open_attention_output = self.open_label_attn(open_lstm_outputs, label_embs, label_embs, False)
+        open_attention_output = self.label_attn(lstm_outputs, open_embs, open_embs, False)
+        close_attention_output = self.label_attn(lstm_outputs, close_embs, close_embs, False)
 
         # [batch, seq_length, lstm_hiddn * 2 + score_label_emb]
-        open_lstm_outputs = torch.cat([open_lstm_outputs, open_attention_output], dim=-1)
+        lstm_outputs = torch.cat([lstm_outputs, open_attention_output, close_attention_output], dim=-1)
 
-        open_lstm_outputs, hidden = self.open_lstm_last(open_lstm_outputs, hidden)
-        open_lstm_outputs = self.dropout(open_lstm_outputs)
+        lstm_outputs, hidden = self.label_lstm_last(lstm_outputs, hidden)
+        lstm_outputs = self.dropout(lstm_outputs)
 
-        open_attention_output = self.open_label_attn_last(open_lstm_outputs, label_embs, label_embs, True)
-
-        """
-        Close tag predict layer
-        """
-        hidden = None
-        close_lstm_outputs, hidden = self.close_lstm_first(discriminator_hidden_states, hidden)
-        close_lstm_outputs = self.dropout(close_lstm_outputs)
-
-        close_attention_output = self.close_label_attn(close_lstm_outputs, label_embs, label_embs, False)
-
-        close_lstm_outputs = torch.cat([close_lstm_outputs, close_attention_output], dim=-1)
-
-        close_lstm_outputs, hidden = self.close_lstm_last(close_lstm_outputs, hidden)
-        close_lstm_outputs = self.dropout(close_lstm_outputs)
-
-        close_attention_output = self.close_label_attn_last(close_lstm_outputs, label_embs, label_embs, True)
+        open_attention_output = self.label_attn_last(lstm_outputs, open_embs, open_embs, True)
+        close_attention_output = self.label_attn_last(lstm_outputs, close_embs, close_embs, True)
 
         return open_attention_output.permute(0, 2, 1), close_attention_output.permute(0, 2, 1)
 
@@ -111,9 +88,9 @@ class multihead_attention(nn.Module):
         self.num_heads = num_heads
         self.dropout_rate = dropout_rate
         self.causality = causality
-        self.Q_proj = nn.Sequential(nn.Linear(self.num_units, self.num_units), nn.ReLU())
-        self.K_proj = nn.Sequential(nn.Linear(self.num_units, self.num_units), nn.ReLU())
-        self.V_proj = nn.Sequential(nn.Linear(self.num_units, self.num_units), nn.ReLU())
+        self.Q_proj = nn.Sequential(nn.Linear(self.num_units, self.num_units), nn.LeakyReLU())
+        self.K_proj = nn.Sequential(nn.Linear(self.num_units, self.num_units), nn.LeakyReLU())
+        self.V_proj = nn.Sequential(nn.Linear(self.num_units, self.num_units), nn.LeakyReLU())
 
         self.output_dropout = nn.Dropout(p=self.dropout_rate)
 
