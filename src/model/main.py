@@ -25,13 +25,16 @@ if __name__ == "__main__":
             label = label.strip()
             close_label_map[len(close_label_map)] = label
 
-    config = {"mode": "test",
+    print(open_label_map)
+    print(close_label_map)
+
+    config = {"mode": "train",
               "train_data_path": os.path.join(config.data_dir, "ME_train.txt"),
               "test_data_path":  os.path.join(config.data_dir, "ME_test.txt"),
               "analyze_data_path": os.path.join(config.data_dir, "sampling_data_5.txt"),
               "cache_dir_path": config.cache_dir,
               "model_dir_path": config.output_dir,
-              "checkpoint": 64470,
+              "checkpoint": 0,
               "epoch": 50,
               "learning_rate": 0.001,
               "dropout_rate": 0.1,
