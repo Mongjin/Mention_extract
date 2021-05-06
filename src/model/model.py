@@ -27,12 +27,22 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
         self.num_layers = num_layer
         self.bidirectional = 2 if bilstm_flag else 1
 
-        self.label_lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
-        self.label_lstm_last = nn.LSTM(lstm_hidden * 6, lstm_hidden, num_layers=self.num_layers,
+        self.open_label_lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
+        self.open_label_lstm_last = nn.LSTM(lstm_hidden * 4, lstm_hidden, num_layers=self.num_layers,
                                        batch_first=True, bidirectional=bilstm_flag)
 
-        self.label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
-        self.label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
+        self.close_label_lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
+        self.close_label_lstm_last = nn.LSTM(lstm_hidden * 4, lstm_hidden, num_layers=self.num_layers,
+                                            batch_first=True, bidirectional=bilstm_flag)
+
+        self.open_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
+        self.open_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
+
+        self.close_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
+        self.close_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
+
+        self.lstm_output2open = nn.Linear(lstm_hidden * 2, open_size)
+        self.lstm_output2close = nn.Linear(lstm_hidden * 2, close_size)
 
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -54,20 +64,35 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
         """
         Open tag predict layer
         """
-        lstm_outputs, hidden = self.label_lstm_first(discriminator_hidden_states, hidden)
-        lstm_outputs = self.dropout(lstm_outputs)
+        open_lstm_outputs, hidden = self.open_label_lstm_first(discriminator_hidden_states, hidden)
+        open_lstm_outputs = self.dropout(open_lstm_outputs)
 
-        open_attention_output = self.label_attn(lstm_outputs, open_embs, open_embs, False)
-        close_attention_output = self.label_attn(lstm_outputs, close_embs, close_embs, False)
+        open_attention_output = self.lstm_output2open(open_lstm_outputs)
 
-        # [batch, seq_length, lstm_hiddn * 2 + score_label_emb]
-        lstm_outputs = torch.cat([lstm_outputs, open_attention_output, close_attention_output], dim=-1)
+        # open_attention_output = self.open_label_attn(open_lstm_outputs, open_embs, open_embs, False)
+        #
+        # open_lstm_outputs = torch.cat([open_lstm_outputs, open_attention_output], dim=-1)
+        #
+        # open_lstm_outputs, hidden = self.open_label_lstm_last(open_lstm_outputs, hidden)
+        # open_lstm_outputs = self.dropout(open_lstm_outputs)
+        # open_attention_output = self.open_label_attn_last(open_lstm_outputs, open_embs, open_embs, True)
 
-        lstm_outputs, hidden = self.label_lstm_last(lstm_outputs, hidden)
-        lstm_outputs = self.dropout(lstm_outputs)
+        """
+        Close tag predict layer
+        """
+        close_lstm_outputs, hidden = self.close_label_lstm_first(discriminator_hidden_states, hidden)
+        close_lstm_outputs = self.dropout(close_lstm_outputs)
 
-        open_attention_output = self.label_attn_last(lstm_outputs, open_embs, open_embs, True)
-        close_attention_output = self.label_attn_last(lstm_outputs, close_embs, close_embs, True)
+        close_attention_output = self.lstm_output2close(close_lstm_outputs)
+
+        # close_attention_output = self.close_label_attn(close_lstm_outputs, close_embs, close_embs, False)
+        #
+        # close_lstm_outputs = torch.cat([close_lstm_outputs, close_attention_output], dim=-1)
+        #
+        # close_lstm_outputs, hidden = self.close_label_lstm_last(close_lstm_outputs, hidden)
+        # close_lstm_outputs = self.dropout(close_lstm_outputs)
+        #
+        # close_attention_output = self.close_label_attn_last(close_lstm_outputs, close_embs, close_embs, True)
 
         return open_attention_output.permute(0, 2, 1), close_attention_output.permute(0, 2, 1)
 

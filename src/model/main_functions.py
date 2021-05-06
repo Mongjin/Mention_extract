@@ -20,26 +20,30 @@ class Helper():
         self.config = config
 
     def do_train(self, electra_model, optimizer, scheduler, train_dataloader, epoch, global_step):
-        open_criterion = nn.CrossEntropyLoss(ignore_index=0)
-        close_criterion = nn.CrossEntropyLoss(ignore_index=0)
+        criterion = nn.CrossEntropyLoss(ignore_index=0)
+        open_map = self.config["open_map"]
+        close_map = self.config["close_map"]
 
         # batch 단위 별 loss를 담을 리스트
         losses = []
         # 모델의 출력 결과와 실제 정답값을 담을 리스트
-        total_predicts, total_corrects = [], []
+        total_open_pred_label = None
+        total_open_gold_label = None
+        total_close_pred_label = None
+        total_close_gold_label = None
         total_open_pred, total_open_correct = 0, 0
         total_close_pred, total_close_correct = 0, 0
         for step, batch in enumerate(tqdm(train_dataloader, desc="do_train(epoch_{})".format(epoch))):
-
             batch = tuple(t.cuda() for t in batch)
-            input_ids, attention_mask, token_type_ids, open_labels, close_labels, open_seq, close_seq, word_len_seq = batch[0], batch[1], batch[2], batch[3], batch[4], batch[5], batch[6], batch[7]
+            input_ids, attention_mask, token_type_ids, open_labels, close_labels, open_seq, close_seq, word_len_seq = \
+            batch[0], batch[1], batch[2], batch[3], batch[4], batch[5], batch[6], batch[7]
 
             # 입력 데이터에 대한 출력과 loss 생성
             open_logits, close_logits = electra_model(input_ids, attention_mask, token_type_ids,
-                                                      open_labels, close_labels, open_seq, close_seq, word_len_seq)
+                                                      open_labels, open_seq, close_labels, close_seq, word_len_seq)
 
-            open_loss = open_criterion(open_logits, open_labels)
-            close_loss = close_criterion(close_logits, close_labels)
+            open_loss = criterion(open_logits, open_labels)
+            close_loss = criterion(close_logits, close_labels)
 
             open_pred = F.softmax(open_logits, dim=1)
             open_pred = open_pred.argmax(dim=1)
@@ -64,6 +68,17 @@ class Helper():
                         if pred_ == gold_:
                             total_close_correct += 1
                         total_close_pred += 1
+
+            if total_open_pred_label is None:
+                total_open_pred_label = open_pred.detach().cpu().numpy()
+                total_open_gold_label = open_labels.detach().cpu().numpy()
+                total_close_pred_label = close_pred.detach().cpu().numpy()
+                total_close_gold_label = close_labels.detach().cpu().numpy()
+            else:
+                total_open_pred_label = np.append(total_open_pred_label, open_pred.detach().cpu().numpy(), axis=0)
+                total_open_gold_label = np.append(total_open_gold_label, open_labels.detach().cpu().numpy(), axis=0)
+                total_close_pred_label = np.append(total_close_pred_label, close_pred.detach().cpu().numpy(), axis=0)
+                total_close_gold_label = np.append(total_close_gold_label, close_labels.detach().cpu().numpy(), axis=0)
 
             total_loss = open_loss + close_loss
             # total_loss = senti_loss
@@ -94,11 +109,43 @@ class Helper():
         open_acc = total_open_correct / total_open_pred
         close_acc = total_close_correct / total_close_pred
 
-        return close_acc, np.mean(losses), global_step, open_acc
+        open_pred_label_list = [[] for _ in range(total_open_gold_label.shape[0])]
+        open_gold_label_list = [[] for _ in range(total_open_gold_label.shape[0])]
+
+        close_pred_label_list = [[] for _ in range(total_close_gold_label.shape[0])]
+        close_gold_label_list = [[] for _ in range(total_close_gold_label.shape[0])]
+
+        for i in range(total_open_gold_label.shape[0]):
+            for j in range(total_open_gold_label.shape[1]):
+                if total_open_gold_label[i, j] != 0:
+                    open_gold_label_list[i].append(open_map[total_open_gold_label[i][j]])
+                    open_pred_label_list[i].append(open_map[total_open_pred_label[i][j]])
+
+        open_precision = precision_score(open_gold_label_list, open_pred_label_list, suffix=True)
+        open_recall = recall_score(open_gold_label_list, open_pred_label_list, suffix=True)
+        open_f1 = f1_score(open_gold_label_list, open_pred_label_list, suffix=True)
+
+        for i in range(total_close_gold_label.shape[0]):
+            for j in range(total_close_gold_label.shape[1]):
+                if total_close_gold_label[i, j] != 0:
+                    close_gold_label_list[i].append(close_map[total_close_gold_label[i][j]])
+                    close_pred_label_list[i].append(close_map[total_close_pred_label[i][j]])
+
+        close_precision = precision_score(close_gold_label_list, close_pred_label_list, suffix=True)
+        close_recall = recall_score(close_gold_label_list, close_pred_label_list, suffix=True)
+        close_f1 = f1_score(close_gold_label_list, close_pred_label_list, suffix=True)
+
+        return (open_acc, close_acc), np.mean(losses), global_step, (open_precision, close_precision), (open_recall, close_recall), (open_f1, close_f1)
 
     def do_evaluate(self, electra_model, test_dataloader, mode):
         # 모델의 입력, 출력, 실제 정답값을 담을 리스트
+        open_map = self.config["open_map"]
+        close_map = self.config["close_map"]
         total_input_ids, total_predicts, total_corrects = [], [], []
+        total_open_pred_label = None
+        total_open_gold_label = None
+        total_close_pred_label = None
+        total_close_gold_label = None
         total_open_pred, total_open_correct = 0, 0
         total_close_pred, total_close_correct = 0, 0
         for step, batch in enumerate(tqdm(test_dataloader, desc="do_evaluate")):
@@ -107,7 +154,7 @@ class Helper():
 
             # 입력 데이터에 대한 출력 결과 생성
             open_logits, close_logits = electra_model(input_ids, attention_mask, token_type_ids,
-                                                      open_labels, close_labels, open_seq, close_seq, word_len_seq)
+                                                      open_labels, open_seq, close_labels, close_seq, word_len_seq)
 
             open_pred = F.softmax(open_logits, dim=1)
             open_pred = open_pred.argmax(dim=1)
@@ -133,17 +180,60 @@ class Helper():
                             total_close_correct += 1
                         total_close_pred += 1
 
+            if total_open_pred_label is None:
+                total_open_pred_label = open_pred.detach().cpu().numpy()
+                total_open_gold_label = open_labels.detach().cpu().numpy()
+                total_close_pred_label = close_pred.detach().cpu().numpy()
+                total_close_gold_label = close_labels.detach().cpu().numpy()
+            else:
+                total_open_pred_label = np.append(total_open_pred_label, open_pred.detach().cpu().numpy(), axis=0)
+                total_open_gold_label = np.append(total_open_gold_label, open_labels.detach().cpu().numpy(), axis=0)
+                total_close_pred_label = np.append(total_close_pred_label, close_pred.detach().cpu().numpy(), axis=0)
+                total_close_gold_label = np.append(total_close_gold_label, close_labels.detach().cpu().numpy(), axis=0)
+
             input_ids = input_ids.cpu().detach().numpy().tolist()
             total_input_ids += input_ids
 
         # 정확도 계산
-        open_acc = total_open_correct / total_open_pred
-        close_acc = total_close_correct / total_close_pred
+        try:
+            open_acc = total_open_correct / total_open_pred
+        except:
+            open_acc = 0
+        try:
+            close_acc = total_close_correct / total_close_pred
+        except:
+            close_acc = 0
+
+        open_pred_label_list = [[] for _ in range(total_open_gold_label.shape[0])]
+        open_gold_label_list = [[] for _ in range(total_open_gold_label.shape[0])]
+
+        close_pred_label_list = [[] for _ in range(total_close_gold_label.shape[0])]
+        close_gold_label_list = [[] for _ in range(total_close_gold_label.shape[0])]
+
+        for i in range(total_open_gold_label.shape[0]):
+            for j in range(total_open_gold_label.shape[1]):
+                if total_open_gold_label[i, j] != 0:
+                    open_gold_label_list[i].append(open_map[total_open_gold_label[i][j]])
+                    open_pred_label_list[i].append(open_map[total_open_pred_label[i][j]])
+
+        open_precision = precision_score(open_gold_label_list, open_pred_label_list, suffix=True)
+        open_recall = recall_score(open_gold_label_list, open_pred_label_list, suffix=True)
+        open_f1 = f1_score(open_gold_label_list, open_pred_label_list, suffix=True)
+
+        for i in range(total_close_gold_label.shape[0]):
+            for j in range(total_close_gold_label.shape[1]):
+                if total_close_gold_label[i, j] != 0:
+                    close_gold_label_list[i].append(close_map[total_close_gold_label[i][j]])
+                    close_pred_label_list[i].append(close_map[total_close_pred_label[i][j]])
+
+        close_precision = precision_score(close_gold_label_list, close_pred_label_list, suffix=True)
+        close_recall = recall_score(close_gold_label_list, close_pred_label_list, suffix=True)
+        close_f1 = f1_score(close_gold_label_list, close_pred_label_list, suffix=True)
 
         if (mode == "train"):
-            return open_acc, close_acc
+            return (open_acc, close_acc), (open_precision, close_precision), (open_recall, close_recall), (open_f1, close_f1)
         else:
-            return open_acc, close_acc, total_input_ids, total_predicts, total_corrects
+            return (open_acc, close_acc), (open_precision, close_precision), (open_recall, close_recall), (open_f1, close_f1), total_input_ids, total_predicts, total_corrects
 
     def do_analyze(self, electra_model, test_dataloader, mode):
         # 모델의 입력, 출력, 실제 정답값을 담을 리스트
@@ -235,9 +325,10 @@ class Helper():
         t_total = len(train_dataloader) // self.config["gradient_accumulation_steps"] * self.config["epoch"]
 
         # 모델 학습을 위한 optimizer
-        no_decay = ['bias', 'LayerNorm.weight']
+        no_decay = ["electra"]
+        print([n for n, p in electra_model.named_parameters() if not any(nd in n for nd in no_decay)])
         optimizer = AdamW([{'params': [p for n, p in electra_model.named_parameters() if not any(nd in n for nd in no_decay)],
-                            'lr': 5e-5, 'weight_decay': self.config['weight_decay']},
+                            'lr': self.config['learning_rate'], 'weight_decay': self.config['weight_decay']},
                            {'params': [p for n, p in electra_model.named_parameters() if any(nd in n for nd in no_decay)],
                             'lr': 5e-5, 'weight_decay': 0.0}])
         # optimizer = AdamW(lan.parameters(), lr=self.config['learning_rate'], eps=self.config['adam_epsilon'])
@@ -258,27 +349,30 @@ class Helper():
             electra_model.train()
 
             # 학습 데이터에 대한 정확도와 평균 loss
-            close_acc, average_loss, global_step, open_acc = self.do_train(electra_model=electra_model,
+            (open_acc, close_acc), average_loss, global_step, (open_precision, close_precision), (open_recall, close_recall), (open_f1, close_f1) = self.do_train(electra_model=electra_model,
                                                                  optimizer=optimizer, scheduler=scheduler,
                                                                  train_dataloader=train_dataloader,
                                                                  epoch=epoch + 1, global_step=global_step)
 
             print("average_loss : {}\n".format(round(average_loss, 4)))
-            print("train_open_accuracy :", "{:.6f}".format(open_acc))
-            print("train_close_accuracy :", "{:.6f}".format(close_acc))
+            print("train_open_accuracy : {:.6f}\ttrain_close_accuracy : {:.6f}".format(open_acc, close_acc))
+            print("train_open_precision : {}\ttrain_close_precision: {}".format(open_precision, close_precision))
+            print("train_open_recall : {}\ttrain_close_recall: {}".format(open_recall, close_recall))
+            print("train_open_f1 : {}\ttrain_close_f1: {}".format(open_f1, close_f1))
 
             electra_model.eval()
 
             # 평가 데이터에 대한 정확도
-            open_acc, close_acc = self.do_evaluate(electra_model=electra_model, test_dataloader=test_dataloader,
-                                             mode=self.config["mode"])
+            (open_acc, close_acc), (open_precision, close_precision), (open_recall, close_recall), (open_f1, close_f1) = self.do_evaluate(electra_model=electra_model, test_dataloader=test_dataloader, mode=self.config["mode"])
 
-            print("test_open_accuracy : {}\n".format(round(open_acc, 4)))
-            print("test_close_accuracy : {}\n".format(round(close_acc, 4)))
+            print("test_open_accuracy : {:.6f}\ttest_close_accuracy : {:.6f}".format(open_acc, close_acc))
+            print("test_open_precision : {}\ttest_close_precision: {}".format(open_precision, close_precision))
+            print("test_open_recall : {}\ttest_close_recall: {}".format(open_recall, close_recall))
+            print("test_open_f1 : {}\ttest_close_f1: {}".format(open_f1, close_f1))
 
             # 현재의 정확도가 기존 정확도보다 높은 경우 모델 파일 저장
-            if (max_test_accuracy < ((open_acc + close_acc) / 2)):
-                max_test_accuracy = (open_acc + close_acc) / 2
+            if (max_test_accuracy < ((open_f1 + close_f1) / 2)):
+                max_test_accuracy = (open_f1 + close_f1) / 2
 
                 output_dir = os.path.join(self.config["model_dir_path"], "checkpoint-{}".format(global_step))
                 if not os.path.exists(output_dir):
@@ -326,7 +420,7 @@ class Helper():
         # electra config 객체 생성
         electra_config = ElectraConfig.from_pretrained(
             os.path.join(self.config["model_dir_path"], "checkpoint-{}".format(self.config["checkpoint"])),
-            num_labels=self.config["senti_labels"],
+            num_labels=self.config["open_labels"],
             cache_dir=None)
 
         # electra tokenizer 객체 생성
@@ -336,17 +430,18 @@ class Helper():
             cache_dir=None)
 
         # electra model 객체 생성
-        electra_model = ElectraForSequenceClassification.from_pretrained(
-            os.path.join(self.config["model_dir_path"], "checkpoint-{}".format(self.config["checkpoint"])),
-            config=electra_config,
-            lstm_hidden=self.config['lstm_hidden'],
-            label_emb_size=self.config['lstm_hidden'] * 2,
-            score_emb_size=self.config['lstm_hidden'] * 2,
-            score_size=self.config['score_labels'],
-            num_layer=self.config['lstm_num_layer'],
-            bilstm_flag=self.config['bidirectional_flag'],
-            cache_dir=self.config["cache_dir_path"]
-        )
+        electra_model = ElectraForSequenceClassification.from_pretrained(os.path.join(self.config["model_dir_path"], "checkpoint-{}".format(self.config["checkpoint"])),
+                                                                         config=electra_config,
+                                                                         lstm_hidden=self.config['lstm_hidden'],
+                                                                         open_emb_size=self.config['lstm_hidden'] * 2,
+                                                                         close_emb_size=self.config['lstm_hidden'] * 2,
+                                                                         open_size=self.config['open_labels'],
+                                                                         close_size=self.config['close_labels'],
+                                                                         num_layer=self.config['lstm_num_layer'],
+                                                                         bilstm_flag=self.config['bidirectional_flag'],
+                                                                         cache_dir=None,
+                                                                         # from_tf=True
+                                                                         )
 
         electra_model.cuda()
 
@@ -356,8 +451,8 @@ class Helper():
         # 평가 데이터 전처리
         test_dataset = preprocessing.convert_data2dataset(datas=test_datas, tokenizer=electra_tokenizer,
                                                           max_length=self.config["max_length"],
-                                                          labels=self.config["senti_labels"],
-                                                          score_labels=self.config["score_labels"],
+                                                          open_labels=self.config["open_labels"],
+                                                          close_labels=self.config["close_labels"],
                                                           mode=self.config["mode"])
 
         # 평가 데이터를 batch 단위로 추출하기 위한 DataLoader 객체 생성
@@ -367,16 +462,14 @@ class Helper():
         electra_model.eval()
 
         # 평가 데이터에 대한 정확도와 모델의 입력, 출력, 정답
-        open_accuracy, close_accuracy, total_input_ids, total_predicts, total_corrects = self.do_evaluate(electra_model=electra_model,
+        (open_acc, close_acc), (open_precision, close_precision), (open_recall, close_recall), (open_f1, close_f1), total_input_ids, total_predicts, total_corrects = self.do_evaluate(electra_model=electra_model,
                                                                                      test_dataloader=test_dataloader,
                                                                                      mode=self.config["mode"])
 
-        print("open_accuracy : {}\n".format(round(open_accuracy, 4)))
-        print("close_accuracy : {}\n".format(round(close_accuracy, 4)))
-
-        # 10개의 평가 케이스에 대하여 모델 출력과 정답 비교
-        self.show_result(total_input_ids=total_input_ids[:10], total_predicts=total_predicts[:10],
-                    total_corrects=total_corrects[:10], tokenizer=electra_tokenizer)
+        print("test_open_accuracy : {:.6f}\ttest_close_accuracy : {:.6f}".format(open_acc, close_acc))
+        print("test_open_precision : {}\ttest_close_precision: {}".format(open_precision, close_precision))
+        print("test_open_recall : {}\ttest_close_recall: {}".format(open_recall, close_recall))
+        print("test_open_f1 : {}\ttest_close_f1: {}".format(open_f1, close_f1))
 
     def analyze(self):
         # electra config 객체 생성
