@@ -67,15 +67,15 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
         open_lstm_outputs, hidden = self.open_label_lstm_first(discriminator_hidden_states, hidden)
         open_lstm_outputs = self.dropout(open_lstm_outputs)
 
-        open_attention_output = self.lstm_output2open(open_lstm_outputs)
+        # open_attention_output = self.lstm_output2open(open_lstm_outputs)
 
-        # open_attention_output = self.open_label_attn(open_lstm_outputs, open_embs, open_embs, False)
-        #
-        # open_lstm_outputs = torch.cat([open_lstm_outputs, open_attention_output], dim=-1)
-        #
-        # open_lstm_outputs, hidden = self.open_label_lstm_last(open_lstm_outputs, hidden)
-        # open_lstm_outputs = self.dropout(open_lstm_outputs)
-        # open_attention_output = self.open_label_attn_last(open_lstm_outputs, open_embs, open_embs, True)
+        open_attention_output = self.open_label_attn(open_lstm_outputs, open_embs, open_embs, False)
+
+        open_lstm_outputs = torch.cat([open_lstm_outputs, open_attention_output], dim=-1)
+
+        open_lstm_outputs, hidden = self.open_label_lstm_last(open_lstm_outputs, hidden)
+        open_lstm_outputs = self.dropout(open_lstm_outputs)
+        open_attention_output = self.open_label_attn_last(open_lstm_outputs, open_embs, open_embs, True)
 
         """
         Close tag predict layer
@@ -83,16 +83,16 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
         close_lstm_outputs, hidden = self.close_label_lstm_first(discriminator_hidden_states, hidden)
         close_lstm_outputs = self.dropout(close_lstm_outputs)
 
-        close_attention_output = self.lstm_output2close(close_lstm_outputs)
+        # close_attention_output = self.lstm_output2close(close_lstm_outputs)
 
-        # close_attention_output = self.close_label_attn(close_lstm_outputs, close_embs, close_embs, False)
-        #
-        # close_lstm_outputs = torch.cat([close_lstm_outputs, close_attention_output], dim=-1)
-        #
-        # close_lstm_outputs, hidden = self.close_label_lstm_last(close_lstm_outputs, hidden)
-        # close_lstm_outputs = self.dropout(close_lstm_outputs)
-        #
-        # close_attention_output = self.close_label_attn_last(close_lstm_outputs, close_embs, close_embs, True)
+        close_attention_output = self.close_label_attn(close_lstm_outputs, close_embs, close_embs, False)
+
+        close_lstm_outputs = torch.cat([close_lstm_outputs, close_attention_output], dim=-1)
+
+        close_lstm_outputs, hidden = self.close_label_lstm_last(close_lstm_outputs, hidden)
+        close_lstm_outputs = self.dropout(close_lstm_outputs)
+
+        close_attention_output = self.close_label_attn_last(close_lstm_outputs, close_embs, close_embs, True)
 
         return open_attention_output.permute(0, 2, 1), close_attention_output.permute(0, 2, 1)
 
