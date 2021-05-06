@@ -21,25 +21,12 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
 
         self.n_hidden = lstm_hidden
 
-        self.open_emb = nn.Embedding(open_size, open_emb_size, scale_grad_by_freq=True)
-        self.close_emb = nn.Embedding(close_size, close_emb_size, scale_grad_by_freq=True)
-
         self.num_layers = num_layer
         self.bidirectional = 2 if bilstm_flag else 1
 
         self.open_label_lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
-        self.open_label_lstm_last = nn.LSTM(lstm_hidden * 4, lstm_hidden, num_layers=self.num_layers,
-                                       batch_first=True, bidirectional=bilstm_flag)
 
         self.close_label_lstm_first = nn.LSTM(config.hidden_size, lstm_hidden, bidirectional=True, batch_first=True)
-        self.close_label_lstm_last = nn.LSTM(lstm_hidden * 4, lstm_hidden, num_layers=self.num_layers,
-                                            batch_first=True, bidirectional=bilstm_flag)
-
-        self.open_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
-        self.open_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
-
-        self.close_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
-        self.close_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
 
         self.lstm_output2open = nn.Linear(lstm_hidden * 2, open_size)
         self.lstm_output2close = nn.Linear(lstm_hidden * 2, close_size)
@@ -56,8 +43,6 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
         discriminator_hidden_states = discriminator_hidden_states[0]
 
         self.batch_size = discriminator_hidden_states.shape[0]
-        open_embs = self.open_emb(open_label_seq_tensor)
-        close_embs = self.close_emb(close_label_seq_tensor)
 
         hidden = None
 
@@ -69,14 +54,6 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
 
         open_attention_output = self.lstm_output2open(open_lstm_outputs)
 
-        # open_attention_output = self.open_label_attn(open_lstm_outputs, open_embs, open_embs, False)
-        #
-        # open_lstm_outputs = torch.cat([open_lstm_outputs, open_attention_output], dim=-1)
-        #
-        # open_lstm_outputs, hidden = self.open_label_lstm_last(open_lstm_outputs, hidden)
-        # open_lstm_outputs = self.dropout(open_lstm_outputs)
-        # open_attention_output = self.open_label_attn_last(open_lstm_outputs, open_embs, open_embs, True)
-
         """
         Close tag predict layer
         """
@@ -84,15 +61,6 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
         close_lstm_outputs = self.dropout(close_lstm_outputs)
 
         close_attention_output = self.lstm_output2close(close_lstm_outputs)
-
-        # close_attention_output = self.close_label_attn(close_lstm_outputs, close_embs, close_embs, False)
-        #
-        # close_lstm_outputs = torch.cat([close_lstm_outputs, close_attention_output], dim=-1)
-        #
-        # close_lstm_outputs, hidden = self.close_label_lstm_last(close_lstm_outputs, hidden)
-        # close_lstm_outputs = self.dropout(close_lstm_outputs)
-        #
-        # close_attention_output = self.close_label_attn_last(close_lstm_outputs, close_embs, close_embs, True)
 
         return open_attention_output.permute(0, 2, 1), close_attention_output.permute(0, 2, 1)
 
