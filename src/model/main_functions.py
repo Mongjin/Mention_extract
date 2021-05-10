@@ -442,6 +442,8 @@ class Helper():
                                                                          cache_dir=None,
                                                                          # from_tf=True
                                                                          )
+        no_decay = ["electra"]
+        print([n for n, p in electra_model.named_parameters() if not any(nd in n for nd in no_decay)])
 
         electra_model.cuda()
 

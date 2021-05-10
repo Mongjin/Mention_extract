@@ -35,6 +35,16 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
         self.close_label_lstm_last = nn.LSTM(lstm_hidden * 4, lstm_hidden, num_layers=self.num_layers,
                                             batch_first=True, bidirectional=bilstm_flag)
 
+        self.open_q_liner = nn.Linear(lstm_hidden * 2, lstm_hidden * 2)
+        self.open_k_liner = nn.Linear(lstm_hidden * 2, lstm_hidden * 2)
+        self.open_v_liner = nn.Linear(lstm_hidden * 2, lstm_hidden * 2)
+
+        self.close_q_liner = nn.Linear(lstm_hidden * 2, lstm_hidden * 2)
+        self.close_k_liner = nn.Linear(lstm_hidden * 2, lstm_hidden * 2)
+        self.close_v_liner = nn.Linear(lstm_hidden * 2, lstm_hidden * 2)
+
+        self.softmax = nn.Softmax(dim=-1)
+
         self.open_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
         self.open_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
 
@@ -60,6 +70,7 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
         close_embs = self.close_emb(close_label_seq_tensor)
 
         hidden = None
+        scaler = self.n_hidden ** 0.5
 
         """
         Open tag predict layer
@@ -67,110 +78,51 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
         open_lstm_outputs, hidden = self.open_label_lstm_first(discriminator_hidden_states, hidden)
         open_lstm_outputs = self.dropout(open_lstm_outputs)
 
-        # open_attention_output = self.lstm_output2open(open_lstm_outputs)
+        open_q = self.open_q_liner(open_lstm_outputs)
+        open_k = self.open_k_liner(open_embs)
+        open_v = self.open_v_liner(open_embs)
 
-        open_attention_output = self.open_label_attn(open_lstm_outputs, open_embs, open_embs, False)
+        open_attention_score = open_q.matmul(open_k.permute(0, 2, 1)) / scaler
+        open_attention_align = self.softmax(open_attention_score)
+        open_attention_output = open_attention_align.matmul(open_v)
+        open_attention_output = self.dropout(open_attention_output)
 
         open_lstm_outputs = torch.cat([open_lstm_outputs, open_attention_output], dim=-1)
 
         open_lstm_outputs, hidden = self.open_label_lstm_last(open_lstm_outputs, hidden)
         open_lstm_outputs = self.dropout(open_lstm_outputs)
-        open_attention_output = self.open_label_attn_last(open_lstm_outputs, open_embs, open_embs, True)
+
+        open_q = self.open_q_liner(open_lstm_outputs)
+        open_k = self.open_k_liner(open_embs)
+
+        open_attention_score = open_q.matmul(open_k.permute(0, 2, 1)) / scaler
+        open_attention_score = self.dropout(open_attention_score)
 
         """
         Close tag predict layer
         """
+        hidden = None
         close_lstm_outputs, hidden = self.close_label_lstm_first(discriminator_hidden_states, hidden)
         close_lstm_outputs = self.dropout(close_lstm_outputs)
 
-        # close_attention_output = self.lstm_output2close(close_lstm_outputs)
+        close_q = self.close_q_liner(close_lstm_outputs)
+        close_k = self.close_k_liner(close_embs)
+        close_v = self.close_v_liner(close_embs)
 
-        close_attention_output = self.close_label_attn(close_lstm_outputs, close_embs, close_embs, False)
+        close_attention_score = close_q.matmul(close_k.permute(0, 2, 1)) / scaler
+        close_attention_align = self.softmax(close_attention_score)
+        close_attention_output = close_attention_align.matmul(close_v)
+        close_attention_output = self.dropout(close_attention_output)
 
         close_lstm_outputs = torch.cat([close_lstm_outputs, close_attention_output], dim=-1)
 
         close_lstm_outputs, hidden = self.close_label_lstm_last(close_lstm_outputs, hidden)
         close_lstm_outputs = self.dropout(close_lstm_outputs)
 
-        close_attention_output = self.close_label_attn_last(close_lstm_outputs, close_embs, close_embs, True)
+        close_q = self.close_q_liner(close_lstm_outputs)
+        close_k = self.close_k_liner(close_embs)
 
-        return open_attention_output.permute(0, 2, 1), close_attention_output.permute(0, 2, 1)
+        close_attention_score = close_q.matmul(close_k.permute(0, 2, 1)) / scaler
+        close_attention_score = self.dropout(close_attention_score)
 
-
-class multihead_attention(nn.Module):
-
-    def __init__(self, num_units, num_heads=1, dropout_rate=0, gpu=True, causality=False):
-        '''Applies multihead attention.
-        Args:
-            num_units: A scalar. Attention size.
-            dropout_rate: A floating point number.
-            causality: Boolean. If true, units that reference the future are masked.
-            num_heads: An int. Number of heads.
-        '''
-        super(multihead_attention, self).__init__()
-        self.gpu = gpu
-        self.num_units = num_units
-        self.num_heads = num_heads
-        self.dropout_rate = dropout_rate
-        self.causality = causality
-        self.Q_proj = nn.Sequential(nn.Linear(self.num_units, self.num_units), nn.LeakyReLU())
-        self.K_proj = nn.Sequential(nn.Linear(self.num_units, self.num_units), nn.LeakyReLU())
-        self.V_proj = nn.Sequential(nn.Linear(self.num_units, self.num_units), nn.LeakyReLU())
-
-        self.output_dropout = nn.Dropout(p=self.dropout_rate)
-
-    def forward(self, queries, keys, values, last_layer=False):
-        # keys, values: same shape of [N, T_k, C_k]
-        # queries: A 3d Variable with shape of [N, T_q, C_q]
-        # Linear projections
-        Q = self.Q_proj(queries)  # (N, T_q, C)
-        K = self.K_proj(keys)  # (N, T_q, C)
-        V = self.V_proj(values)  # (N, T_q, C)
-
-        # get dim to concat
-        concat_dim = len(Q.shape) - 1
-
-        if concat_dim == 1:
-            Q = Q.unsqueeze(dim=1)
-            queries = queries.unsqueeze(dim=1)
-            concat_dim = 2
-
-        # Split and concat
-        Q_ = torch.cat(torch.chunk(Q, self.num_heads, dim=concat_dim), dim=0)  # (h*N, T_q, C/h)
-        K_ = torch.cat(torch.chunk(K, self.num_heads, dim=concat_dim), dim=0)  # (h*N, T_q, C/h)
-        V_ = torch.cat(torch.chunk(V, self.num_heads, dim=concat_dim), dim=0)  # (h*N, T_q, C/h)
-
-        # Multiplication
-        outputs = torch.bmm(Q_, K_.permute(0, 2, 1))  # (h*N, T_q, T_k)
-
-        # Scale
-        outputs = outputs / (K_.size()[-1] ** 0.5)
-
-        # Activation
-        if not last_layer:
-            outputs = F.softmax(outputs, dim=-1)  # (h*N, T_q, T_k)
-
-        # Query Masking
-        query_masks = torch.sign(torch.abs(torch.sum(queries, dim=-1)))  # (N, T_q)
-        query_masks = query_masks.repeat(self.num_heads, 1)  # (h*N, T_q)
-        query_masks = torch.unsqueeze(query_masks, 2).repeat(1, 1, keys.size()[1])  # (h*N, T_q, T_k)
-        query_masks = query_masks.reshape([outputs.shape[0], outputs.shape[1], outputs.shape[2]])
-
-        outputs = outputs * query_masks
-
-        # Dropouts
-        outputs = self.output_dropout(outputs)  # (h*N, T_q, T_k)
-
-        if last_layer:
-            return outputs
-
-        # Weighted sum
-        outputs = torch.bmm(outputs, V_)  # (h*N, T_q, C/h)
-
-        # Restore shape
-        outputs = torch.cat(torch.chunk(outputs, self.num_heads, dim=0), dim=concat_dim)  # (N, T_q, C)
-
-        # Residual connection
-        outputs += queries
-
-        return outputs
+        return open_attention_score.permute(0, 2, 1), close_attention_score.permute(0, 2, 1)
