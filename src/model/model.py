@@ -45,12 +45,6 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
 
         self.softmax = nn.Softmax(dim=-1)
 
-        self.open_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
-        self.open_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
-
-        self.close_label_attn = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=config.hidden_dropout_prob)
-        self.close_label_attn_last = multihead_attention(lstm_hidden * 2, num_heads=1, dropout_rate=0)
-
         self.lstm_output2open = nn.Linear(lstm_hidden * 2, open_size)
         self.lstm_output2close = nn.Linear(lstm_hidden * 2, close_size)
 
