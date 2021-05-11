@@ -67,8 +67,10 @@ def convert_data2dataset(datas, tokenizer, max_length, open_labels, close_labels
             if not word_tokens:
                 word_tokens = [tokenizer.unk_token]
             tokens.extend(word_tokens)
-            open_ids.extend([open_tag] + [0] * (len(word_tokens)-1))
-            close_ids.extend([close_tag] + [0] * (len(word_tokens)-1))
+            open_ids.extend([open_tag] * len(word_tokens))
+            close_ids.extend([close_tag] * len(word_tokens))
+            # open_ids.extend([open_tag] + [open_label_map["O"]] * (len(word_tokens)-1))
+            # close_ids.extend([close_tag] + [close_label_map["O"]] * (len(word_tokens)-1))
 
         tokens = ["[CLS]"] + tokens
         tokens = tokens[:max_length-1]
@@ -81,6 +83,7 @@ def convert_data2dataset(datas, tokenizer, max_length, open_labels, close_labels
         close_ids.append(close_label_map["[PAD]"])
         input_ids = [tokenizer._convert_token_to_id(token) for token in tokens]
         assert len(input_ids) <= max_length
+        assert len(input_ids) == len(open_ids) == len(close_ids)
 
         attention_mask = [1] * len(input_ids)
         token_type_ids = [0] * len(input_ids)

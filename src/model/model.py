@@ -64,7 +64,7 @@ class ElectraForSequenceClassification(ElectraPreTrainedModel):
         close_embs = self.close_emb(close_label_seq_tensor)
 
         hidden = None
-        scaler = self.n_hidden ** 0.5
+        scaler = (self.n_hidden * 2) ** 0.5
 
         """
         Open tag predict layer
