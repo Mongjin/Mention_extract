@@ -70,7 +70,7 @@ def convert_data2dataset(datas, tokenizer, max_length, open_labels, close_labels
             open_ids.extend([open_tag] * len(word_tokens))
             close_ids.extend([close_tag] * len(word_tokens))
             # open_ids.extend([open_tag] + [open_label_map["O"]] * (len(word_tokens)-1))
-            # close_ids.extend([close_tag] + [close_label_map["O"]] * (len(word_tokens)-1))
+            # close_ids.extend([close_label_map["O"]] * (len(word_tokens)-1) + [close_tag])
 
         tokens = ["[CLS]"] + tokens
         tokens = tokens[:max_length-1]

@@ -25,13 +25,13 @@ if __name__ == "__main__":
             label = label.strip()
             close_label_map[len(close_label_map)] = label
 
-    config = {"mode": "train",
+    config = {"mode": "test",
               "train_data_path": os.path.join(config.data_dir, "ME_train.txt"),
               "test_data_path":  os.path.join(config.data_dir, "ME_test.txt"),
               "analyze_data_path": os.path.join(config.data_dir, "sampling_data_5.txt"),
               "cache_dir_path": config.cache_dir,
               "model_dir_path": config.output_dir,
-              "checkpoint": 71838,
+              "checkpoint": 88416,
               "epoch": 50,
               "learning_rate": 0.001,
               "dropout_rate": 0.1,
@@ -42,8 +42,8 @@ if __name__ == "__main__":
               "lstm_hidden": 256,
               "lstm_num_layer": 1,
               "bidirectional_flag": True,
-              "open_labels": 10,
-              "close_labels": 10,
+              "open_labels": 11,
+              "close_labels": 11,
               "open_map": open_label_map,
               "close_map": close_label_map,
               "gradient_accumulation_steps": 1,
