@@ -25,7 +25,7 @@ if __name__ == "__main__":
             label = label.strip()
             close_label_map[len(close_label_map)] = label
 
-    config = {"mode": "test",
+    config = {"mode": "train",
               "train_data_path": os.path.join(config.data_dir, "ME_train.txt"),
               "test_data_path":  os.path.join(config.data_dir, "ME_test.txt"),
               "analyze_data_path": os.path.join(config.data_dir, "sampling_data_5.txt"),
